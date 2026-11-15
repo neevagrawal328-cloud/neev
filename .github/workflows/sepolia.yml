@@ -1,0 +1,67 @@
+name: Solidity CI and Sepolia Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sepolia-deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  compile-and-deploy:
+    name: Compile contracts and deploy to Sepolia
+    runs-on: ubuntu-latest
+    environment: sepolia
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install project dependencies
+        run: npm ci
+
+      - name: Generate Solidity standard JSON input
+        run: npm run prepare-input
+
+      - name: Compile with Solidity 0.8.24
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm -i \
+            -v "$GITHUB_WORKSPACE:/app" \
+            -w /app \
+            ethereum/solc:0.8.24 \
+            --standard-json --base-path /app --include-path /app/node_modules \
+            < build/input.json > build/output.json
+
+      - name: Verify compiler output and deployment bytecode
+        run: node scripts/check-compile.js
+
+      - name: Install ethers for deployment
+        run: npm install --no-save --package-lock=false ethers@6.15.0
+
+      - name: Deploy to Sepolia
+        env:
+          SEPOLIA_RPC_URL: ${{ secrets.SEPOLIA_RPC_URL || secrets.RPC_URL }}
+          SEPOLIA_PRIVATE_KEY: ${{ secrets.SEPOLIA_PRIVATE_KEY || secrets.PRIVATE_KEY }}
+          CONTRACT_NAME: helloworld
+        run: node scripts/deploy-sepolia.js
+
+      - name: Save compiler output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: solidity-build-output
+          path: build/
+          if-no-files-found: ignore
+          retention-days: 7
